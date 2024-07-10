@@ -1,9 +1,10 @@
+import io
 from typing import Union
 
 from aiogram import types, Router, F
 from aiogram.enums import ParseMode
 from aiogram.filters.callback_data import CallbackData
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from handlers.common.common import add_pagination_buttons
@@ -130,14 +131,28 @@ async def select_quantity(callback: CallbackQuery):
     subcategory_id = unpacked_callback.subcategory_id
     category_id = unpacked_callback.category_id
     current_level = unpacked_callback.level
+    
     description = await ItemService.get_description(subcategory_id)
+    
     count_builder = InlineKeyboardBuilder()
-    for i in range(1, 11):
-        count_button_callback = create_callback_all_categories(level=current_level + 1, category_id=category_id,
-                                                               subcategory_id=subcategory_id, price=price,
-                                                               quantity=i, total_price=price * i)
-        count_button_inline = types.InlineKeyboardButton(text=str(i), callback_data=count_button_callback)
+    quantities = list(range(1, 11)) + [20, 50, 100]
+    
+    for quantity in quantities:
+        total_price = price * quantity
+        count_button_callback = create_callback_all_categories(
+            level=current_level + 1,
+            category_id=category_id,
+            subcategory_id=subcategory_id,
+            price=price,
+            quantity=quantity,
+            total_price=total_price
+        )
+        count_button_inline = types.InlineKeyboardButton(
+            text=str(quantity),
+            callback_data=count_button_callback
+        )
         count_builder.add(count_button_inline)
+
     back_button = types.InlineKeyboardButton(text=Localizator.get_text_from_key("admin_back_button"),
                                              callback_data=create_callback_all_categories(level=current_level - 1,
                                                                                           category_id=category_id))
@@ -215,12 +230,26 @@ async def buy_processing(callback: CallbackQuery):
     if confirmation and is_in_stock and is_enough_money:
         await UserService.update_consume_records(telegram_id, total_price)
         sold_items = await ItemService.get_bought_items(subcategory_id, quantity)
-        message = await create_message_with_bought_items(sold_items)
         user = await UserService.get_by_tgid(telegram_id)
         new_buy_id = await BuyService.insert_new(user, quantity, total_price)
         await BuyItemService.insert_many(sold_items, new_buy_id)
         await ItemService.set_items_sold(sold_items)
-        await callback.message.edit_text(text=message, parse_mode=ParseMode.HTML)
+        if quantity > 1:
+            subcategory = await SubcategoryService.get_by_primary_key(subcategory_id)
+            filename = f"{user.id}-{new_buy_id}-{subcategory.name}-{quantity}-{total_price}.txt"
+            message = await create_message_with_bought_items(sold_items)
+            file_content = message.encode('utf-8')
+            file = BufferedInputFile(file_content, filename=filename)
+            await callback.message.answer_document(
+                document=file,
+                caption=Localizator.get_text_from_key("purchase_successful"),
+                parse_mode=ParseMode.HTML
+            )
+            await callback.message.delete()
+        else:
+            message = await create_message_with_bought_items(sold_items)
+            await callback.message.edit_text(text=message, parse_mode=ParseMode.HTML)
+        
         await NotificationManager.new_buy(subcategory_id, quantity, total_price, user)
     elif confirmation is False:
         await callback.message.edit_text(text=Localizator.get_text_from_key("admin_declined"),
@@ -235,13 +264,11 @@ async def buy_processing(callback: CallbackQuery):
                                          parse_mode=ParseMode.HTML,
                                          reply_markup=back_to_main_builder.as_markup())
 
-
 async def create_message_with_bought_items(bought_data: list):
-    message = "<b>"
+    message = ""
     for count, item in enumerate(bought_data, start=1):
         private_data = item.private_data
         message += Localizator.get_text_from_key("purchased_item").format(count=count, private_data=private_data)
-    message += "</b>"
     return message
 
 
